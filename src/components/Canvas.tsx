@@ -59,66 +59,130 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       return Math.hypot(p.x - projX, p.y - projY) < threshold;
     };
 
-    // Evaluates Catmull-Rom spline segment for p1 to p2 with control points p0 and p3
-    const getCatmullRomPoint = (p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point => {
-      const t2 = t * t;
-      const t3 = t2 * t;
-
-      const f0 = -0.5 * t3 + t2 - 0.5 * t;
-      const f1 = 1.5 * t3 - 2.5 * t2 + 1.0;
-      const f2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
-      const f3 = 0.5 * t3 - 0.5 * t2;
-
-      return {
-        x: p0.x * f0 + p1.x * f1 + p2.x * f2 + p3.x * f3,
-        y: p0.y * f0 + p1.y * f1 + p2.y * f2 + p3.y * f3,
-      };
+    // Stage 1: Ramer-Douglas-Peucker (RDP) Simplification
+    const perpendicularDistance = (pt: Point, lineStart: Point, lineEnd: Point) => {
+      const dx = lineEnd.x - lineStart.x;
+      const dy = lineEnd.y - lineStart.y;
+      const mag = Math.hypot(dx, dy);
+      if (mag === 0) return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
+      return Math.abs(dy * pt.x - dx * pt.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x) / mag;
     };
 
-    // Renders stroke with C^1 continuous Catmull-Rom spline interpolation
-    const drawSmoothStroke = (ctx: CanvasRenderingContext2D, pts: Point[], strokeColor: string, strokeWidth: number) => {
-      if (pts.length === 0) return;
+    const rdpSimplify = (pts: Point[], epsilon = 0.75): Point[] => {
+      if (pts.length <= 2) return pts;
+      let dmax = 0;
+      let index = 0;
+      const end = pts.length - 1;
 
-      if (pts.length === 1) {
+      for (let i = 1; i < end; i++) {
+        const d = perpendicularDistance(pts[i], pts[0], pts[end]);
+        if (d > dmax) {
+          index = i;
+          dmax = d;
+        }
+      }
+
+      if (dmax > epsilon) {
+        const rec1 = rdpSimplify(pts.slice(0, index + 1), epsilon);
+        const rec2 = rdpSimplify(pts.slice(index), epsilon);
+        return [...rec1.slice(0, rec1.length - 1), ...rec2];
+      }
+      return [pts[0], pts[end]];
+    };
+
+    // Stage 2: Adaptive Angle & Curvature Subdivision
+    const adaptiveSubdivide = (pts: Point[], maxAngleRad = 0.2): Point[] => {
+      if (pts.length < 3) return pts;
+      const result: Point[] = [pts[0]];
+
+      for (let i = 0; i < pts.length - 2; i++) {
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const p3 = pts[i + 2];
+
+        const v1 = { x: p2.x - p1.x, y: p2.y - p1.y };
+        const v2 = { x: p3.x - p2.x, y: p3.y - p2.y };
+
+        const len1 = Math.hypot(v1.x, v1.y);
+        const len2 = Math.hypot(v2.x, v2.y);
+
+        if (len1 > 0 && len2 > 0) {
+          const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
+          const clampedDot = Math.max(-1, Math.min(1, dot));
+          const angle = Math.acos(clampedDot);
+
+          // If turning angle > threshold, inject curvature midpoints
+          if (angle > maxAngleRad) {
+            const steps = Math.min(6, Math.ceil(angle / maxAngleRad));
+            for (let s = 1; s < steps; s++) {
+              const t = s / steps;
+              result.push({
+                x: p1.x + (p2.x - p1.x) * t,
+                y: p1.y + (p2.y - p1.y) * t,
+              });
+            }
+          }
+        }
+        result.push(p2);
+      }
+      result.push(pts[pts.length - 1]);
+      return result;
+    };
+
+    // Stage 3: Chaikin Corner Cutting
+    const smoothChaikin = (pts: Point[], iterations = 2): Point[] => {
+      if (pts.length <= 2) return pts;
+      let current = pts;
+
+      for (let it = 0; it < iterations; it++) {
+        const next: Point[] = [current[0]];
+        for (let i = 0; i < current.length - 1; i++) {
+          const p0 = current[i];
+          const p1 = current[i + 1];
+
+          const q = { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y };
+          const r = { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y };
+
+          next.push(q);
+          next.push(r);
+        }
+        next.push(current[current.length - 1]);
+        current = next;
+      }
+
+      return current;
+    };
+
+    // Master 3-Stage Pipeline Renderer
+    const drawSmoothStroke = (ctx: CanvasRenderingContext2D, rawPts: Point[], strokeColor: string, strokeWidth: number) => {
+      if (rawPts.length === 0) return;
+
+      if (rawPts.length === 1) {
         ctx.beginPath();
-        ctx.arc(pts[0].x, pts[0].y, strokeWidth / 2, 0, Math.PI * 2);
+        ctx.arc(rawPts[0].x, rawPts[0].y, strokeWidth / 2, 0, Math.PI * 2);
         ctx.fillStyle = strokeColor;
         ctx.fill();
         return;
       }
 
+      // Execute 3-Stage Geometry Pipeline
+      const stage1 = rdpSimplify(rawPts, 0.75);
+      const stage2 = adaptiveSubdivide(stage1, 0.2);
+      const smoothed = smoothChaikin(stage2, 2);
+
       ctx.beginPath();
       ctx.strokeStyle = strokeColor;
       ctx.lineWidth = strokeWidth;
 
-      if (pts.length === 2) {
-        ctx.moveTo(pts[0].x + 0.5, pts[0].y + 0.5);
-        ctx.lineTo(pts[1].x + 0.5, pts[1].y + 0.5);
-        ctx.stroke();
-        return;
+      ctx.moveTo(smoothed[0].x + 0.5, smoothed[0].y + 0.5);
+
+      for (let i = 1; i < smoothed.length - 1; i++) {
+        const midX = (smoothed[i].x + smoothed[i + 1].x) / 2;
+        const midY = (smoothed[i].y + smoothed[i + 1].y) / 2;
+        ctx.quadraticCurveTo(smoothed[i].x + 0.5, smoothed[i].y + 0.5, midX + 0.5, midY + 0.5);
       }
 
-      // Pad boundary points to establish C^1 tangents at endpoints
-      const p = [pts[0], ...pts, pts[pts.length - 1]];
-
-      ctx.moveTo(p[1].x + 0.5, p[1].y + 0.5);
-
-      for (let i = 1; i < p.length - 2; i++) {
-        const p0 = p[i - 1];
-        const p1 = p[i];
-        const p2 = p[i + 1];
-        const p3 = p[i + 2];
-
-        const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        const steps = Math.max(4, Math.ceil(dist / 2)); // Dynamic step density per segment length
-
-        for (let step = 1; step <= steps; step++) {
-          const t = step / steps;
-          const cp = getCatmullRomPoint(p0, p1, p2, p3, t);
-          ctx.lineTo(cp.x + 0.5, cp.y + 0.5);
-        }
-      }
-
+      ctx.lineTo(smoothed[smoothed.length - 1].x + 0.5, smoothed[smoothed.length - 1].y + 0.5);
       ctx.stroke();
     };
 
@@ -241,13 +305,13 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.clip();
       }
 
-      // Render vector strokes with Catmull-Rom interpolation (Turquoise `#00f2fe` for selection)
+      // Render vector strokes with 3-stage pipeline (Turquoise `#00f2fe` for lasso selection)
       strokes.forEach((stroke) => {
         const isSelected = selectedStrokeIds.includes(stroke.id);
         drawSmoothStroke(ctx, stroke.points, isSelected ? '#00f2fe' : stroke.color, isSelected ? stroke.width + 1 : stroke.width);
       });
 
-      // Bounding box overlay for selection
+      // Bounding box overlay
       const bounds = computeSelectionBounds(selectedStrokeIds, strokes);
       if (bounds) {
         ctx.save();
@@ -265,7 +329,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         drawSmoothStroke(ctx, currentPoints.current, color, penSize);
       }
 
-      // Lasso path outline
+      // Lasso path
       if (currentPoints.current.length > 0 && activeTool === 'lasso') {
         ctx.beginPath();
         ctx.strokeStyle = '#00f2fe';
