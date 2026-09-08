@@ -169,8 +169,11 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       }
 
       // Execute 3-Stage Geometry Pipeline
-      const stage1 = rdpSimplify(rawPts, 0.75);
-      const stage2 = adaptiveSubdivide(stage1, 0.2);
+      // RDP Simplification is DEACTIVATED:
+      // const stage1 = rdpSimplify(rawPts, 0.75);
+      // const stage2 = adaptiveSubdivide(stage1, 0.2);
+      // Below is adjusted stage2
+      const stage2 = adaptiveSubdivide(rawPts, 0.2);
       const smoothed = smoothChaikin(stage2, 2);
 
       ctx.beginPath();
