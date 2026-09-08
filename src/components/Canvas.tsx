@@ -137,7 +137,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       if (!ctx) return;
 
       // High-DPI Supersampling Factor (3x DPR for ultra-crisp Huion/Stylus lines)
-      const dpr = Math.max(window.devicePixelRatio || 1, 3);
+      const dpr = Math.max(window.devicePixelRatio || 1, 5);
       const rect = canvas.getBoundingClientRect();
 
       if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
