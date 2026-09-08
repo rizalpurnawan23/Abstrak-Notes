@@ -36,13 +36,16 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
   ({ activeTool, color, penSize, zoom, paperSize, gridType, clearTrigger, isDarkMode, strokes, setStrokes }, ref) => {
     const internalCanvasRef = useRef<HTMLCanvasElement | null>(null);
     const isDrawing = useRef(false);
+    const isDraggingSelection = useRef(false);
     const currentPoints = useRef<Point[]>([]);
     const activePointerId = useRef<number | null>(null);
 
     const [panOffset, setPanOffset] = useState<Point>({ x: 0, y: 0 });
     const panStart = useRef<Point>({ x: 0, y: 0 });
+    const lastDragPt = useRef<Point | null>(null);
     const [eraserPos, setEraserPos] = useState<Point | null>(null);
     const [selectedStrokeIds, setSelectedStrokeIds] = useState<string[]>([]);
+    const [selectionBounds, setSelectionBounds] = useState<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null);
 
     useImperativeHandle(ref, () => internalCanvasRef.current!);
 
@@ -56,7 +59,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       return Math.hypot(p.x - projX, p.y - projY) < threshold;
     };
 
-    // Sub-pixel aligned smooth stroke rendering for crisp anti-aliasing
     const drawSmoothStroke = (ctx: CanvasRenderingContext2D, pts: Point[], strokeColor: string, strokeWidth: number) => {
       if (pts.length === 0) return;
 
@@ -71,7 +73,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         return;
       }
 
-      // 0.5px sub-pixel snap for ultra-sharp line rendering
       ctx.moveTo(pts[0].x + 0.5, pts[0].y + 0.5);
 
       if (pts.length === 2) {
@@ -132,6 +133,25 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       ctx.restore();
     };
 
+    // Calculate bounding box for selected strokes
+    const computeSelectionBounds = useCallback((ids: string[], currentStrokes: Stroke[]) => {
+      if (ids.length === 0) return null;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+      currentStrokes.forEach((st) => {
+        if (ids.includes(st.id)) {
+          st.points.forEach((p) => {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+          });
+        }
+      });
+
+      return minX === Infinity ? null : { minX: minX - 10, minY: minY - 10, maxX: maxX + 10, maxY: maxY + 10 };
+    }, []);
+
     const renderCanvas = useCallback(() => {
       const canvas = internalCanvasRef.current;
       if (!canvas) return;
@@ -147,8 +167,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       }
 
       ctx.save();
-      
-      // Anti-aliasing quality controls
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
 
@@ -156,7 +174,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       ctx.scale(dpr * zoom, dpr * zoom);
       ctx.translate(panOffset.x, panOffset.y);
 
-      // Background
+      // Workspace background
       ctx.fillStyle = isDarkMode ? '#121212' : '#e8e8e8';
       ctx.fillRect(-panOffset.x, -panOffset.y, rect.width / zoom, rect.height / zoom);
 
@@ -192,21 +210,34 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.clip();
       }
 
-      // Render vector strokes with sub-pixel alignment
+      // Render vector strokes (Turquoise `#00f2fe` for lasso selection)
       strokes.forEach((stroke) => {
         const isSelected = selectedStrokeIds.includes(stroke.id);
-        drawSmoothStroke(ctx, stroke.points, isSelected ? '#007acc' : stroke.color, stroke.width);
+        drawSmoothStroke(ctx, stroke.points, isSelected ? '#00f2fe' : stroke.color, isSelected ? stroke.width + 1 : stroke.width);
       });
 
-      // Active live stroke
+      // Bounding box overlay for selected strokes
+      const bounds = computeSelectionBounds(selectedStrokeIds, strokes);
+      if (bounds) {
+        ctx.save();
+        ctx.strokeStyle = '#00f2fe';
+        ctx.lineWidth = 1.5 / zoom;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(bounds.minX, bounds.minY, bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+        ctx.fillStyle = 'rgba(0, 242, 254, 0.05)';
+        ctx.fillRect(bounds.minX, bounds.minY, bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+        ctx.restore();
+      }
+
+      // Active stroke
       if (currentPoints.current.length > 0 && activeTool === 'pen') {
         drawSmoothStroke(ctx, currentPoints.current, color, penSize);
       }
 
-      // Lasso Path
+      // Lasso path outline
       if (currentPoints.current.length > 0 && activeTool === 'lasso') {
         ctx.beginPath();
-        ctx.strokeStyle = '#007acc';
+        ctx.strokeStyle = '#00f2fe';
         ctx.setLineDash([6, 6]);
         ctx.moveTo(currentPoints.current[0].x, currentPoints.current[0].y);
         for (let i = 1; i < currentPoints.current.length; i++) {
@@ -221,7 +252,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.restore();
       }
 
-      // Eraser reticle ring
+      // Eraser cursor
       if (activeTool === 'eraser' && eraserPos) {
         ctx.beginPath();
         ctx.arc(eraserPos.x, eraserPos.y, 12 / zoom, 0, Math.PI * 2);
@@ -231,11 +262,13 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       }
 
       ctx.restore();
-    }, [strokes, isDarkMode, color, penSize, activeTool, zoom, eraserPos, paperSize, gridType, panOffset, selectedStrokeIds]);
+    }, [strokes, isDarkMode, color, penSize, activeTool, zoom, eraserPos, paperSize, gridType, panOffset, selectedStrokeIds, computeSelectionBounds]);
 
     useEffect(() => {
       renderCanvas();
-    }, [renderCanvas]);
+      const bounds = computeSelectionBounds(selectedStrokeIds, strokes);
+      setSelectionBounds(bounds);
+    }, [renderCanvas, selectedStrokeIds, strokes, computeSelectionBounds]);
 
     useEffect(() => {
       const canvas = internalCanvasRef.current;
@@ -275,6 +308,17 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       );
     };
 
+    const handleDeleteSelected = () => {
+      setStrokes((prev) => prev.filter((s) => !selectedStrokeIds.includes(s.id)));
+      setSelectedStrokeIds([]);
+      setSelectionBounds(null);
+    };
+
+    const handleDeselect = () => {
+      setSelectedStrokeIds([]);
+      setSelectionBounds(null);
+    };
+
     const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (e.pointerType === 'touch' && e.pointerId !== activePointerId.current && activePointerId.current !== null) {
         return;
@@ -290,11 +334,28 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         y: (e.clientY - rect.top) / zoom - panOffset.y,
       };
 
+      // Check if clicking inside current selection bounding box to drag/move
+      if (
+        selectedStrokeIds.length > 0 &&
+        selectionBounds &&
+        pt.x >= selectionBounds.minX &&
+        pt.x <= selectionBounds.maxX &&
+        pt.y >= selectionBounds.minY &&
+        pt.y <= selectionBounds.maxY
+      ) {
+        isDraggingSelection.current = true;
+        lastDragPt.current = pt;
+        return;
+      }
+
       if (activeTool === 'pan') {
         panStart.current = { x: e.clientX - panOffset.x * zoom, y: e.clientY - panOffset.y * zoom };
       } else if (activeTool === 'pen' || activeTool === 'lasso') {
         currentPoints.current = [pt];
-        if (activeTool === 'pen') setSelectedStrokeIds([]);
+        if (activeTool === 'pen') {
+          setSelectedStrokeIds([]);
+          setSelectionBounds(null);
+        }
         renderCanvas();
       } else if (activeTool === 'eraser') {
         setEraserPos(pt);
@@ -314,6 +375,24 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       }
 
       if (!isDrawing.current || e.pointerId !== activePointerId.current) return;
+
+      // Handle dragging move for selected strokes
+      if (isDraggingSelection.current && lastDragPt.current) {
+        const dx = pt.x - lastDragPt.current.x;
+        const dy = pt.y - lastDragPt.current.y;
+        lastDragPt.current = pt;
+
+        setStrokes((prev) =>
+          prev.map((st) => {
+            if (!selectedStrokeIds.includes(st.id)) return st;
+            return {
+              ...st,
+              points: st.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+            };
+          })
+        );
+        return;
+      }
 
       if (activeTool === 'pan') {
         setPanOffset({
@@ -344,7 +423,10 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       if (!isDrawing.current || e.pointerId !== activePointerId.current) return;
 
       isDrawing.current = false;
+      isDraggingSelection.current = false;
+      lastDragPt.current = null;
       activePointerId.current = null;
+
       if (e.currentTarget.hasPointerCapture(e.pointerId)) {
         e.currentTarget.releasePointerCapture(e.pointerId);
       }
@@ -382,20 +464,72 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
     };
 
     return (
-      <canvas
-        ref={internalCanvasRef}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-        onPointerLeave={() => setEraserPos(null)}
-        style={{
-          width: '100%',
-          height: '100%',
-          touchAction: 'none',
-          cursor: activeTool === 'pan' ? 'grab' : activeTool === 'lasso' ? 'crosshair' : 'default',
-        }}
-      />
+      <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+        <canvas
+          ref={internalCanvasRef}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onPointerLeave={() => setEraserPos(null)}
+          style={{
+            width: '100%',
+            height: '100%',
+            touchAction: 'none',
+            cursor: activeTool === 'pan' ? 'grab' : activeTool === 'lasso' ? 'crosshair' : 'default',
+          }}
+        />
+
+        {/* FLOATING ACTION POPUP FOR LASSO SELECTION */}
+        {selectionBounds && selectedStrokeIds.length > 0 && (
+          <div
+            style={{
+              position: 'absolute',
+              left: `${(selectionBounds.minX + panOffset.x) * zoom}px`,
+              top: `${(selectionBounds.minY + panOffset.y) * zoom - 44}px`,
+              display: 'flex',
+              gap: '6px',
+              padding: '4px 8px',
+              borderRadius: '8px',
+              background: isDarkMode ? '#2c2c2e' : '#ffffff',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
+              zIndex: 120,
+            }}
+          >
+            <button
+              onClick={handleDeleteSelected}
+              style={{
+                padding: '4px 8px',
+                borderRadius: '6px',
+                border: '1px solid #ff4d4f',
+                background: '#ff4d4f',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 'bold',
+              }}
+              title="Delete Selected Strokes"
+            >
+              🗑️ Delete
+            </button>
+            <button
+              onClick={handleDeselect}
+              style={{
+                padding: '4px 8px',
+                borderRadius: '6px',
+                border: '1px solid #ccc',
+                background: 'transparent',
+                color: 'inherit',
+                cursor: 'pointer',
+                fontSize: '12px',
+              }}
+              title="Deselect"
+            >
+              ✖️
+            </button>
+          </div>
+        )}
+      </div>
     );
   }
 );
