@@ -68,8 +68,8 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       return Math.abs(dy * pt.x - dx * pt.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x) / mag;
     };
 
-    // epsilon is reduced to 0.25 to refine the result
-    const rdpSimplify = (pts: Point[], epsilon = 0.25): Point[] => {
+    // epsilon is reduced to 0.6 to refine the result
+    const rdpSimplify = (pts: Point[], epsilon = 0.6): Point[] => {
       if (pts.length <= 2) return pts;
       let dmax = 0;
       let index = 0;
@@ -93,7 +93,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
 
     // Stage 2: Adaptive Angle & Curvature Subdivision
     // maxAngleRad is reduced to 0.05 for a refinement
-    const adaptiveSubdivide = (pts: Point[], maxAngleRad = 0.05): Point[] => {
+    const adaptiveSubdivide = (pts: Point[], maxAngleRad = 0.15): Point[] => {
       if (pts.length < 3) return pts;
       const result: Point[] = [pts[0]];
 
@@ -169,8 +169,8 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
 
       // Execute 3-Stage Geometry Pipeline
       // Adjustment of epsilon and maxAngleRad
-      const stage1 = rdpSimplify(rawPts, 0.45);
-      const stage2 = adaptiveSubdivide(stage1, 0.05);
+      const stage1 = rdpSimplify(rawPts, 0.6);
+      const stage2 = adaptiveSubdivide(stage1, 0.15);
       const smoothed = smoothChaikin(stage2, 2);
 
       ctx.beginPath();
