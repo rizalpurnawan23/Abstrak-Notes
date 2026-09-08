@@ -138,7 +138,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const dpr = Math.max(window.devicePixelRatio || 1, 5);
+      const dpr = Math.max(window.devicePixelRatio || 1, 2);
       const rect = canvas.getBoundingClientRect();
 
       if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
