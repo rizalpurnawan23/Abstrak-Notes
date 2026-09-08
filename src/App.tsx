@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Canvas, Stroke } from './components/Canvas';
-import { Toolbar, PaperSize } from './components/Toolbar';
+import { Toolbar, PaperSize, GridType, ToolType } from './components/Toolbar';
 import { NoteList } from './components/NoteList';
 import { ExportModal } from './components/ExportModal';
 import { useNotesDB } from './hooks/useNotesDB';
@@ -11,11 +11,12 @@ export const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
-  const [activeTool, setActiveTool] = useState<'pen' | 'eraser'>('pen');
+  const [activeTool, setActiveTool] = useState<ToolType>('pen');
   const [color, setColor] = useState<string>('#000000');
   const [penSize, setPenSize] = useState<number>(3);
   const [zoom, setZoom] = useState<number>(1.0);
   const [paperSize, setPaperSize] = useState<PaperSize>('infinite');
+  const [gridType, setGridType] = useState<GridType>('none');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isExportOpen, setIsExportOpen] = useState(false);
@@ -143,7 +144,6 @@ export const App: React.FC = () => {
 
       {/* WORKSPACE */}
       <div style={{ flex: 1, position: 'relative' }}>
-        {/* Sidebar Toggle Button & Note Title */}
         <div
           style={{
             position: 'absolute',
@@ -187,6 +187,8 @@ export const App: React.FC = () => {
           setZoom={setZoom}
           paperSize={paperSize}
           setPaperSize={setPaperSize}
+          gridType={gridType}
+          setGridType={setGridType}
           onClear={() => setClearTrigger((prev) => prev + 1)}
           isDarkMode={isDarkMode}
         />
@@ -198,13 +200,14 @@ export const App: React.FC = () => {
           penSize={penSize}
           zoom={zoom}
           paperSize={paperSize}
+          gridType={gridType}
           clearTrigger={clearTrigger}
           isDarkMode={isDarkMode}
           strokes={strokes}
           setStrokes={setStrokes}
         />
 
-        {/* CONTROLS */}
+        {/* TOP CONTROLS */}
         <div style={{ position: 'absolute', top: 16, right: 100, display: 'flex', gap: '8px', zIndex: 100 }}>
           <button
             onClick={handleManualSave}

@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useImperativeHandle, forwardRef, useState } from 'react';
-import { PaperSize } from './Toolbar';
+import { PaperSize, GridType, ToolType } from './Toolbar';
 
 export interface Point {
   x: number;
@@ -14,18 +14,18 @@ export interface Stroke {
 }
 
 interface CanvasProps {
-  activeTool: 'pen' | 'eraser';
+  activeTool: ToolType;
   color: string;
   penSize: number;
   zoom: number;
   paperSize: PaperSize;
+  gridType: GridType;
   clearTrigger?: number;
   isDarkMode: boolean;
   strokes: Stroke[];
   setStrokes: React.Dispatch<React.SetStateAction<Stroke[]>>;
 }
 
-// Paper ratios (Width x Height in px at standard 96DPI base scale)
 const PAPER_DIMENSIONS: Record<Exclude<PaperSize, 'infinite'>, { w: number; h: number }> = {
   a4: { w: 794, h: 1123 },
   a5: { w: 559, h: 794 },
@@ -33,12 +33,17 @@ const PAPER_DIMENSIONS: Record<Exclude<PaperSize, 'infinite'>, { w: number; h: n
 };
 
 export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
-  ({ activeTool, color, penSize, zoom, paperSize, clearTrigger, isDarkMode, strokes, setStrokes }, ref) => {
+  ({ activeTool, color, penSize, zoom, paperSize, gridType, clearTrigger, isDarkMode, strokes, setStrokes }, ref) => {
     const internalCanvasRef = useRef<HTMLCanvasElement | null>(null);
     const isDrawing = useRef(false);
     const currentPoints = useRef<Point[]>([]);
     const activePointerId = useRef<number | null>(null);
+
+    // Pan & Selection State
+    const [panOffset, setPanOffset] = useState<Point>({ x: 0, y: 0 });
+    const panStart = useRef<Point>({ x: 0, y: 0 });
     const [eraserPos, setEraserPos] = useState<Point | null>(null);
+    const [selectedStrokeIds, setSelectedStrokeIds] = useState<string[]>([]);
 
     useImperativeHandle(ref, () => internalCanvasRef.current!);
 
@@ -82,13 +87,57 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       ctx.stroke();
     };
 
+    const drawGridPattern = (ctx: CanvasRenderingContext2D, w: number, h: number, x: number, y: number) => {
+      if (gridType === 'none') return;
+
+      ctx.save();
+      ctx.strokeStyle = isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
+      ctx.fillStyle = isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)';
+      ctx.lineWidth = 1 / zoom;
+
+      const spacing = 28;
+
+      if (gridType === 'ruled') {
+        for (let gy = y + spacing; gy < y + h; gy += spacing) {
+          ctx.beginPath();
+          ctx.moveTo(x, gy);
+          ctx.lineTo(x + w, gy);
+          ctx.stroke();
+        }
+      } else if (gridType === 'graph') {
+        for (let gx = x + spacing; gx < x + w; gx += spacing) {
+          ctx.beginPath();
+          ctx.moveTo(gx, y);
+          ctx.lineTo(gx, y + h);
+          ctx.stroke();
+        }
+        for (let gy = y + spacing; gy < y + h; gy += spacing) {
+          ctx.beginPath();
+          ctx.moveTo(x, gy);
+          ctx.lineTo(x + w, gy);
+          ctx.stroke();
+        }
+      } else if (gridType === 'dots') {
+        for (let gx = x + spacing; gx < x + w; gx += spacing) {
+          for (let gy = y + spacing; gy < y + h; gy += spacing) {
+            ctx.beginPath();
+            ctx.arc(gx, gy, 1.2 / zoom, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      ctx.restore();
+    };
+
     const renderCanvas = useCallback(() => {
       const canvas = internalCanvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const dpr = window.devicePixelRatio || 1;
+      // High-DPI Supersampling Factor (3x DPR for ultra-crisp Huion/Stylus lines)
+      const dpr = Math.max(window.devicePixelRatio || 1, 3);
       const rect = canvas.getBoundingClientRect();
 
       if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
@@ -99,12 +148,12 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       ctx.save();
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.scale(dpr * zoom, dpr * zoom);
+      ctx.translate(panOffset.x, panOffset.y);
 
-      // Workspace background color
+      // Canvas background
       ctx.fillStyle = isDarkMode ? '#121212' : '#e8e8e8';
-      ctx.fillRect(0, 0, rect.width / zoom, rect.height / zoom);
+      ctx.fillRect(-panOffset.x, -panOffset.y, rect.width / zoom, rect.height / zoom);
 
-      // Paper Dimensions & Positioning
       let paperX = 0;
       let paperY = 0;
       let paperW = rect.width / zoom;
@@ -117,7 +166,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         paperX = Math.max(20, (rect.width / zoom - paperW) / 2);
         paperY = Math.max(20, (rect.height / zoom - paperH) / 2);
 
-        // Draw Paper Shadow & Background Sheet
         ctx.fillStyle = isDarkMode ? '#1e1e1e' : '#ffffff';
         ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
         ctx.shadowBlur = 12 / zoom;
@@ -126,10 +174,11 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.shadowColor = 'transparent';
       }
 
+      drawGridPattern(ctx, paperW, paperH, paperX, paperY);
+
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
-      // Clip canvas rendering strictly to paper boundaries if paper size is fixed
       if (paperSize !== 'infinite') {
         ctx.save();
         ctx.beginPath();
@@ -137,21 +186,36 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.clip();
       }
 
-      // Render committed strokes
+      // Draw all saved vector strokes
       strokes.forEach((stroke) => {
-        drawSmoothStroke(ctx, stroke.points, stroke.color, stroke.width);
+        const isSelected = selectedStrokeIds.includes(stroke.id);
+        drawSmoothStroke(ctx, stroke.points, isSelected ? '#007acc' : stroke.color, stroke.width);
       });
 
-      // Active stroke
+      // Draw current active stroke
       if (currentPoints.current.length > 0 && activeTool === 'pen') {
         drawSmoothStroke(ctx, currentPoints.current, color, penSize);
+      }
+
+      // Draw Lasso Selection Box
+      if (currentPoints.current.length > 0 && activeTool === 'lasso') {
+        ctx.beginPath();
+        ctx.strokeStyle = '#007acc';
+        ctx.setLineDash([6, 6]);
+        ctx.moveTo(currentPoints.current[0].x, currentPoints.current[0].y);
+        for (let i = 1; i < currentPoints.current.length; i++) {
+          ctx.lineTo(currentPoints.current[i].x, currentPoints.current[i].y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
 
       if (paperSize !== 'infinite') {
         ctx.restore();
       }
 
-      // Render Object Eraser Ring Indicator
+      // Draw Eraser Visual Ring
       if (activeTool === 'eraser' && eraserPos) {
         ctx.beginPath();
         ctx.arc(eraserPos.x, eraserPos.y, 12 / zoom, 0, Math.PI * 2);
@@ -161,13 +225,12 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       }
 
       ctx.restore();
-    }, [strokes, isDarkMode, color, penSize, activeTool, zoom, eraserPos, paperSize]);
+    }, [strokes, isDarkMode, color, penSize, activeTool, zoom, eraserPos, paperSize, gridType, panOffset, selectedStrokeIds]);
 
     useEffect(() => {
       renderCanvas();
     }, [renderCanvas]);
 
-    // Prevent iPad OS Safari double-tap zoom & pointer gesture intercept
     useEffect(() => {
       const canvas = internalCanvasRef.current;
       if (!canvas) return;
@@ -189,6 +252,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
     useEffect(() => {
       if (clearTrigger !== undefined && clearTrigger > 0) {
         setStrokes([]);
+        setSelectedStrokeIds([]);
       }
     }, [clearTrigger, setStrokes]);
 
@@ -216,12 +280,15 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
 
       const rect = internalCanvasRef.current!.getBoundingClientRect();
       const pt = {
-        x: (e.clientX - rect.left) / zoom,
-        y: (e.clientY - rect.top) / zoom,
+        x: (e.clientX - rect.left) / zoom - panOffset.x,
+        y: (e.clientY - rect.top) / zoom - panOffset.y,
       };
 
-      if (activeTool === 'pen') {
+      if (activeTool === 'pan') {
+        panStart.current = { x: e.clientX - panOffset.x * zoom, y: e.clientY - panOffset.y * zoom };
+      } else if (activeTool === 'pen' || activeTool === 'lasso') {
         currentPoints.current = [pt];
+        if (activeTool === 'pen') setSelectedStrokeIds([]);
         renderCanvas();
       } else if (activeTool === 'eraser') {
         setEraserPos(pt);
@@ -232,8 +299,8 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
     const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
       const rect = internalCanvasRef.current!.getBoundingClientRect();
       const pt = {
-        x: (e.clientX - rect.left) / zoom,
-        y: (e.clientY - rect.top) / zoom,
+        x: (e.clientX - rect.left) / zoom - panOffset.x,
+        y: (e.clientY - rect.top) / zoom - panOffset.y,
       };
 
       if (activeTool === 'eraser') {
@@ -242,15 +309,23 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
 
       if (!isDrawing.current || e.pointerId !== activePointerId.current) return;
 
+      if (activeTool === 'pan') {
+        setPanOffset({
+          x: (e.clientX - panStart.current.x) / zoom,
+          y: (e.clientY - panStart.current.y) / zoom,
+        });
+        return;
+      }
+
       const coalesced = e.nativeEvent.getCoalescedEvents
         ? e.nativeEvent.getCoalescedEvents()
         : [e.nativeEvent];
 
-      if (activeTool === 'pen') {
+      if (activeTool === 'pen' || activeTool === 'lasso') {
         coalesced.forEach((evt) => {
           currentPoints.current.push({
-            x: (evt.clientX - rect.left) / zoom,
-            y: (evt.clientY - rect.top) / zoom,
+            x: (evt.clientX - rect.left) / zoom - panOffset.x,
+            y: (evt.clientY - rect.top) / zoom - panOffset.y,
           });
         });
         renderCanvas();
@@ -276,7 +351,27 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
           width: penSize,
         };
         setStrokes((prev) => [...prev, newStroke]);
+      } else if (activeTool === 'lasso' && currentPoints.current.length > 2) {
+        // Find strokes contained inside lasso path
+        const lassoPts = currentPoints.current;
+        const selected = strokes
+          .filter((st) =>
+            st.points.some((p) => {
+              let inside = false;
+              for (let i = 0, j = lassoPts.length - 1; i < lassoPts.length; j = i++) {
+                const xi = lassoPts[i].x, yi = lassoPts[i].y;
+                const xj = lassoPts[j].x, yj = lassoPts[j].y;
+                const intersect =
+                  yi > p.y !== yj > p.y && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi;
+                if (intersect) inside = !inside;
+              }
+              return inside;
+            })
+          )
+          .map((st) => st.id);
+        setSelectedStrokeIds(selected);
       }
+
       currentPoints.current = [];
       renderCanvas();
     };
@@ -289,7 +384,12 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onPointerLeave={() => setEraserPos(null)}
-        style={{ width: '100%', height: '100%', touchAction: 'none' }}
+        style={{
+          width: '100%',
+          height: '100%',
+          touchAction: 'none',
+          cursor: activeTool === 'pan' ? 'grab' : activeTool === 'lasso' ? 'crosshair' : 'default',
+        }}
       />
     );
   }
