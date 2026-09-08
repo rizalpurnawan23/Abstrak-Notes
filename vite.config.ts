@@ -4,7 +4,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   // IMPORTANT: Change this to match your exact GitHub repository name
-  base: '/abstrak-notes/', 
+  base: '/Abstrak-Notes/', 
   
   plugins: [
     react(),
