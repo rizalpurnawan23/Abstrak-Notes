@@ -60,37 +60,36 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
     };
 
     // Stage 1: Ramer-Douglas-Peucker (RDP) Simplification
-    // RDP Simplification is DEACTIVATED
-    // const perpendicularDistance = (pt: Point, lineStart: Point, lineEnd: Point) => {
-    //   const dx = lineEnd.x - lineStart.x;
-    //   const dy = lineEnd.y - lineStart.y;
-    //   const mag = Math.hypot(dx, dy);
-    //   if (mag === 0) return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
-    //   return Math.abs(dy * pt.x - dx * pt.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x) / mag;
-    // };
+    const perpendicularDistance = (pt: Point, lineStart: Point, lineEnd: Point) => {
+      const dx = lineEnd.x - lineStart.x;
+      const dy = lineEnd.y - lineStart.y;
+      const mag = Math.hypot(dx, dy);
+      if (mag === 0) return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
+      return Math.abs(dy * pt.x - dx * pt.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x) / mag;
+    };
 
-    // epsilon is reduced to 0.35 to refine the result
-    // const rdpSimplify = (pts: Point[], epsilon = 0.35): Point[] => {
-    //   if (pts.length <= 2) return pts;
-    //   let dmax = 0;
-    //   let index = 0;
-    //   const end = pts.length - 1;
+    // epsilon is reduced to 0.25 to refine the result
+    const rdpSimplify = (pts: Point[], epsilon = 0.25): Point[] => {
+      if (pts.length <= 2) return pts;
+      let dmax = 0;
+      let index = 0;
+      const end = pts.length - 1;
 
-    //   for (let i = 1; i < end; i++) {
-    //     const d = perpendicularDistance(pts[i], pts[0], pts[end]);
-    //     if (d > dmax) {
-    //       index = i;
-    //       dmax = d;
-    //     }
-    //   }
+      for (let i = 1; i < end; i++) {
+        const d = perpendicularDistance(pts[i], pts[0], pts[end]);
+        if (d > dmax) {
+          index = i;
+          dmax = d;
+        }
+      }
 
-    //   if (dmax > epsilon) {
-    //     const rec1 = rdpSimplify(pts.slice(0, index + 1), epsilon);
-    //     const rec2 = rdpSimplify(pts.slice(index), epsilon);
-    //     return [...rec1.slice(0, rec1.length - 1), ...rec2];
-    //   }
-    //   return [pts[0], pts[end]];
-    // };
+      if (dmax > epsilon) {
+        const rec1 = rdpSimplify(pts.slice(0, index + 1), epsilon);
+        const rec2 = rdpSimplify(pts.slice(index), epsilon);
+        return [...rec1.slice(0, rec1.length - 1), ...rec2];
+      }
+      return [pts[0], pts[end]];
+    };
 
     // Stage 2: Adaptive Angle & Curvature Subdivision
     // maxAngleRad is reduced to 0.05 for a refinement
@@ -169,11 +168,9 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       }
 
       // Execute 3-Stage Geometry Pipeline
-      // RDP Simplification is DEACTIVATED:
-      // const stage1 = rdpSimplify(rawPts, 0.75);
-      // const stage2 = adaptiveSubdivide(stage1, 0.2);
-      // Below is adjusted stage2
-      const stage2 = adaptiveSubdivide(rawPts, 0.2);
+      // Adjustment of epsilon and maxAngleRad
+      const stage1 = rdpSimplify(rawPts, 0.25);
+      const stage2 = adaptiveSubdivide(stage1, 0.05);
       const smoothed = smoothChaikin(stage2, 2);
 
       ctx.beginPath();
