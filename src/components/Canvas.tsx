@@ -169,7 +169,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
 
       // Execute 3-Stage Geometry Pipeline
       // Adjustment of epsilon and maxAngleRad
-      const stage1 = rdpSimplify(rawPts, 0.25);
+      const stage1 = rdpSimplify(rawPts, 0.45);
       const stage2 = adaptiveSubdivide(stage1, 0.05);
       const smoothed = smoothChaikin(stage2, 2);
 
