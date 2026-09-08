@@ -68,7 +68,8 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       return Math.abs(dy * pt.x - dx * pt.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x) / mag;
     };
 
-    const rdpSimplify = (pts: Point[], epsilon = 0.75): Point[] => {
+    // epsilon is reduced to 0.35 to refine the result
+    const rdpSimplify = (pts: Point[], epsilon = 0.35): Point[] => {
       if (pts.length <= 2) return pts;
       let dmax = 0;
       let index = 0;
@@ -91,7 +92,8 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
     };
 
     // Stage 2: Adaptive Angle & Curvature Subdivision
-    const adaptiveSubdivide = (pts: Point[], maxAngleRad = 0.2): Point[] => {
+    // maxAngleRad is reduced to 0.05 for a refinement
+    const adaptiveSubdivide = (pts: Point[], maxAngleRad = 0.05): Point[] => {
       if (pts.length < 3) return pts;
       const result: Point[] = [pts[0]];
 
