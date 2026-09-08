@@ -39,7 +39,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
     const currentPoints = useRef<Point[]>([]);
     const activePointerId = useRef<number | null>(null);
 
-    // Pan & Selection State
     const [panOffset, setPanOffset] = useState<Point>({ x: 0, y: 0 });
     const panStart = useRef<Point>({ x: 0, y: 0 });
     const [eraserPos, setEraserPos] = useState<Point | null>(null);
@@ -57,6 +56,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       return Math.hypot(p.x - projX, p.y - projY) < threshold;
     };
 
+    // Sub-pixel aligned smooth stroke rendering for crisp anti-aliasing
     const drawSmoothStroke = (ctx: CanvasRenderingContext2D, pts: Point[], strokeColor: string, strokeWidth: number) => {
       if (pts.length === 0) return;
 
@@ -71,9 +71,11 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         return;
       }
 
-      ctx.moveTo(pts[0].x, pts[0].y);
+      // 0.5px sub-pixel snap for ultra-sharp line rendering
+      ctx.moveTo(pts[0].x + 0.5, pts[0].y + 0.5);
+
       if (pts.length === 2) {
-        ctx.lineTo(pts[1].x, pts[1].y);
+        ctx.lineTo(pts[1].x + 0.5, pts[1].y + 0.5);
         ctx.stroke();
         return;
       }
@@ -81,9 +83,9 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       for (let i = 1; i < pts.length - 1; i++) {
         const midX = (pts[i].x + pts[i + 1].x) / 2;
         const midY = (pts[i].y + pts[i + 1].y) / 2;
-        ctx.quadraticCurveTo(pts[i].x, pts[i].y, midX, midY);
+        ctx.quadraticCurveTo(pts[i].x + 0.5, pts[i].y + 0.5, midX + 0.5, midY + 0.5);
       }
-      ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+      ctx.lineTo(pts[pts.length - 1].x + 0.5, pts[pts.length - 1].y + 0.5);
       ctx.stroke();
     };
 
@@ -91,8 +93,8 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       if (gridType === 'none') return;
 
       ctx.save();
-      ctx.strokeStyle = isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
-      ctx.fillStyle = isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)';
+      ctx.strokeStyle = isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+      ctx.fillStyle = isDarkMode ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)';
       ctx.lineWidth = 1 / zoom;
 
       const spacing = 28;
@@ -100,21 +102,21 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       if (gridType === 'ruled') {
         for (let gy = y + spacing; gy < y + h; gy += spacing) {
           ctx.beginPath();
-          ctx.moveTo(x, gy);
-          ctx.lineTo(x + w, gy);
+          ctx.moveTo(x, gy + 0.5);
+          ctx.lineTo(x + w, gy + 0.5);
           ctx.stroke();
         }
       } else if (gridType === 'graph') {
         for (let gx = x + spacing; gx < x + w; gx += spacing) {
           ctx.beginPath();
-          ctx.moveTo(gx, y);
-          ctx.lineTo(gx, y + h);
+          ctx.moveTo(gx + 0.5, y);
+          ctx.lineTo(gx + 0.5, y + h);
           ctx.stroke();
         }
         for (let gy = y + spacing; gy < y + h; gy += spacing) {
           ctx.beginPath();
-          ctx.moveTo(x, gy);
-          ctx.lineTo(x + w, gy);
+          ctx.moveTo(x, gy + 0.5);
+          ctx.lineTo(x + w, gy + 0.5);
           ctx.stroke();
         }
       } else if (gridType === 'dots') {
@@ -136,7 +138,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // High-DPI Supersampling Factor (3x DPR for ultra-crisp Huion/Stylus lines)
       const dpr = Math.max(window.devicePixelRatio || 1, 5);
       const rect = canvas.getBoundingClientRect();
 
@@ -146,11 +147,16 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       }
 
       ctx.save();
+      
+      // Anti-aliasing quality controls
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.scale(dpr * zoom, dpr * zoom);
       ctx.translate(panOffset.x, panOffset.y);
 
-      // Canvas background
+      // Background
       ctx.fillStyle = isDarkMode ? '#121212' : '#e8e8e8';
       ctx.fillRect(-panOffset.x, -panOffset.y, rect.width / zoom, rect.height / zoom);
 
@@ -186,18 +192,18 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.clip();
       }
 
-      // Draw all saved vector strokes
+      // Render vector strokes with sub-pixel alignment
       strokes.forEach((stroke) => {
         const isSelected = selectedStrokeIds.includes(stroke.id);
         drawSmoothStroke(ctx, stroke.points, isSelected ? '#007acc' : stroke.color, stroke.width);
       });
 
-      // Draw current active stroke
+      // Active live stroke
       if (currentPoints.current.length > 0 && activeTool === 'pen') {
         drawSmoothStroke(ctx, currentPoints.current, color, penSize);
       }
 
-      // Draw Lasso Selection Box
+      // Lasso Path
       if (currentPoints.current.length > 0 && activeTool === 'lasso') {
         ctx.beginPath();
         ctx.strokeStyle = '#007acc';
@@ -215,7 +221,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.restore();
       }
 
-      // Draw Eraser Visual Ring
+      // Eraser reticle ring
       if (activeTool === 'eraser' && eraserPos) {
         ctx.beginPath();
         ctx.arc(eraserPos.x, eraserPos.y, 12 / zoom, 0, Math.PI * 2);
@@ -352,7 +358,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         };
         setStrokes((prev) => [...prev, newStroke]);
       } else if (activeTool === 'lasso' && currentPoints.current.length > 2) {
-        // Find strokes contained inside lasso path
         const lassoPts = currentPoints.current;
         const selected = strokes
           .filter((st) =>
