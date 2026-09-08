@@ -59,34 +59,83 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       return Math.hypot(p.x - projX, p.y - projY) < threshold;
     };
 
-    const drawSmoothStroke = (ctx: CanvasRenderingContext2D, pts: Point[], strokeColor: string, strokeWidth: number) => {
-      if (pts.length === 0) return;
+    // Dense subdivision to prevent angular segmentation
+    const subdividePoints = (pts: Point[], maxDist = 4): Point[] => {
+      if (pts.length < 2) return pts;
+      const result: Point[] = [pts[0]];
 
-      ctx.beginPath();
-      ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = strokeWidth;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
 
-      if (pts.length === 1) {
-        ctx.arc(pts[0].x, pts[0].y, strokeWidth / 2, 0, Math.PI * 2);
+        if (dist > maxDist) {
+          const steps = Math.ceil(dist / maxDist);
+          for (let s = 1; s < steps; s++) {
+            const t = s / steps;
+            result.push({
+              x: p1.x + (p2.x - p1.x) * t,
+              y: p1.y + (p2.y - p1.y) * t,
+            });
+          }
+        }
+        result.push(p2);
+      }
+      return result;
+    };
+
+    // Chaikin's Corner Cutting Smoothing Algorithm
+    const smoothChaikin = (pts: Point[], iterations = 2): Point[] => {
+      if (pts.length <= 2) return pts;
+      let current = pts;
+
+      for (let it = 0; it < iterations; it++) {
+        const next: Point[] = [current[0]];
+        for (let i = 0; i < current.length - 1; i++) {
+          const p0 = current[i];
+          const p1 = current[i + 1];
+
+          const q = { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y };
+          const r = { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y };
+
+          next.push(q);
+          next.push(r);
+        }
+        next.push(current[current.length - 1]);
+        current = next;
+      }
+
+      return current;
+    };
+
+    // High-resolution, anti-segmented curve rendering
+    const drawSmoothStroke = (ctx: CanvasRenderingContext2D, rawPts: Point[], strokeColor: string, strokeWidth: number) => {
+      if (rawPts.length === 0) return;
+
+      if (rawPts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(rawPts[0].x, rawPts[0].y, strokeWidth / 2, 0, Math.PI * 2);
         ctx.fillStyle = strokeColor;
         ctx.fill();
         return;
       }
 
-      ctx.moveTo(pts[0].x + 0.5, pts[0].y + 0.5);
+      const densePts = subdividePoints(rawPts, 3);
+      const smoothedPts = smoothChaikin(densePts, 2);
 
-      if (pts.length === 2) {
-        ctx.lineTo(pts[1].x + 0.5, pts[1].y + 0.5);
-        ctx.stroke();
-        return;
+      ctx.beginPath();
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = strokeWidth;
+
+      ctx.moveTo(smoothedPts[0].x + 0.5, smoothedPts[0].y + 0.5);
+
+      for (let i = 1; i < smoothedPts.length - 1; i++) {
+        const midX = (smoothedPts[i].x + smoothedPts[i + 1].x) / 2;
+        const midY = (smoothedPts[i].y + smoothedPts[i + 1].y) / 2;
+        ctx.quadraticCurveTo(smoothedPts[i].x + 0.5, smoothedPts[i].y + 0.5, midX + 0.5, midY + 0.5);
       }
 
-      for (let i = 1; i < pts.length - 1; i++) {
-        const midX = (pts[i].x + pts[i + 1].x) / 2;
-        const midY = (pts[i].y + pts[i + 1].y) / 2;
-        ctx.quadraticCurveTo(pts[i].x + 0.5, pts[i].y + 0.5, midX + 0.5, midY + 0.5);
-      }
-      ctx.lineTo(pts[pts.length - 1].x + 0.5, pts[pts.length - 1].y + 0.5);
+      ctx.lineTo(smoothedPts[smoothedPts.length - 1].x + 0.5, smoothedPts[smoothedPts.length - 1].y + 0.5);
       ctx.stroke();
     };
 
@@ -133,7 +182,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       ctx.restore();
     };
 
-    // Calculate bounding box for selected strokes
     const computeSelectionBounds = useCallback((ids: string[], currentStrokes: Stroke[]) => {
       if (ids.length === 0) return null;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -158,7 +206,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const dpr = Math.max(window.devicePixelRatio || 1, 2);
+      const dpr = Math.max(window.devicePixelRatio || 1, 3);
       const rect = canvas.getBoundingClientRect();
 
       if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
@@ -210,13 +258,13 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.clip();
       }
 
-      // Render vector strokes (Turquoise `#00f2fe` for lasso selection)
+      // Render vector strokes with turquoise highlight (`#00f2fe`)
       strokes.forEach((stroke) => {
         const isSelected = selectedStrokeIds.includes(stroke.id);
         drawSmoothStroke(ctx, stroke.points, isSelected ? '#00f2fe' : stroke.color, isSelected ? stroke.width + 1 : stroke.width);
       });
 
-      // Bounding box overlay for selected strokes
+      // Bounding box overlay for selection
       const bounds = computeSelectionBounds(selectedStrokeIds, strokes);
       if (bounds) {
         ctx.save();
@@ -229,7 +277,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         ctx.restore();
       }
 
-      // Active stroke
+      // Active live stroke
       if (currentPoints.current.length > 0 && activeTool === 'pen') {
         drawSmoothStroke(ctx, currentPoints.current, color, penSize);
       }
@@ -334,7 +382,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
         y: (e.clientY - rect.top) / zoom - panOffset.y,
       };
 
-      // Check if clicking inside current selection bounding box to drag/move
       if (
         selectedStrokeIds.length > 0 &&
         selectionBounds &&
@@ -376,7 +423,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
 
       if (!isDrawing.current || e.pointerId !== activePointerId.current) return;
 
-      // Handle dragging move for selected strokes
       if (isDraggingSelection.current && lastDragPt.current) {
         const dx = pt.x - lastDragPt.current.x;
         const dy = pt.y - lastDragPt.current.y;
@@ -480,7 +526,6 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
           }}
         />
 
-        {/* FLOATING ACTION POPUP FOR LASSO SELECTION */}
         {selectionBounds && selectedStrokeIds.length > 0 && (
           <div
             style={{
@@ -508,7 +553,7 @@ export const Canvas = forwardRef<HTMLCanvasElement, CanvasProps>(
                 fontSize: '12px',
                 fontWeight: 'bold',
               }}
-              title="Delete Selected Strokes"
+              title="Delete Selected"
             >
               🗑️ Delete
             </button>
